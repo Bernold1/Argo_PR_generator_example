@@ -1,0 +1,46 @@
+environment: prod
+
+chart:
+  repoURL: ghcr.io/example-org/charts
+  name: ephemeral-group-example
+
+argocd:
+  namespace: argocd
+  project: default
+  githubAppSecretName: github-repository-credentials
+
+applications:
+  - name: alpha-service
+    repositoryURL: https://github.com/example-org/k8s-some-app
+    path: service/alpha-service/prod
+    targetRevision: main
+  - name: beta-service
+    repositoryURL: https://github.com/example-org/k8s-some-app
+    path: service/beta-service/prod
+    targetRevision: main
+
+network:
+  ingress:
+    - host: my-app.example.com
+
+ephemeralGroups:
+  - name: sales-app
+    repoURL: https://github.com/example-org/some-app
+    path: ephemeral/
+    filters:
+      - branchMatch: "^ephemeral/.*$"
+    helm:
+      parameters:
+        - name: pullRequestId
+          value: "{{ .number }}"
+        - name: image.tag
+          value: "{{ .head_sha }}"
+    applications:
+      - name: alpha-service
+        helm:
+          valueFiles:
+            - ephemeral/services/alpha-service.values.yaml
+      - name: beta-service
+        helm:
+          valueFiles:
+            - ephemeral/services/beta-service.values.yaml

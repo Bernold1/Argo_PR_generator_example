@@ -1,0 +1,44 @@
+# Example of a frontend  that might not live in this repo?
+serviceName: "svc-delta"
+replicaCount: 1
+pullRequestId: NaN
+isFrontend: true
+image:
+  repository: registry.example.com/example-org/example-app-delta-service
+  pullPolicy: Always
+  staticTag: "latest"
+serviceAccountName: "example-workload-identity-delta"
+port: 3000
+configMap:
+  enabled: true
+  data:
+    - key: NODE_ENV
+      value: "production"
+    - key: API_ALPHA_URL
+      value: "http://svc-alpha:8080/"
+    - key: API_BETA_URL
+      value: "http://svc-beta:8080/"
+    - key: API_GAMMA_URL
+      value: "http://svc-gamma:8080/"
+service:
+  ports:
+    - port: 3000
+      name: http
+      protocol: TCP
+httpRoute:
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 300m
+    memory: 512Mi
+readinessProbe:
+  httpGet:
+    path: /
+    port: 3000

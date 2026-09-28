@@ -1,0 +1,167 @@
+name: Ephemeral Build Images
+on:
+  workflow_dispatch:
+    inputs:
+      service_to_run:
+        description: 'Select Service'
+        required: true
+        type: choice
+        options:
+          - alpha-service
+          - beta-service
+          - gamma-service
+          - delta-service
+          - epsilon-service
+  push:
+    branches:
+      - 'ephemeral/**'
+concurrency:
+  group: ephemeral-${{ github.ref }}
+jobs:
+  detect-changes:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+      has_changes: ${{ steps.set-matrix.outputs.has_changes }}
+      unchanged: ${{ steps.set-matrix.outputs.unchanged }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Determine base commit
+        id: base
+        run: |
+          if [ "${{ github.event.before }}" = "0000000000000000000000000000000000000000" ]; then
+            echo "base=$(git rev-parse HEAD^)" >> "$GITHUB_OUTPUT"
+          else
+            echo "base=${{ github.event.before }}" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          base: ${{ steps.base.outputs.base }}
+          filters: |
+            alpha-service:   [ 'services/alpha-service/**' ]
+            beta-service:    [ 'services/beta-service/**' ]
+            gamma-service:   [ 'services/gamma-service/**' ]
+            delta-service:   [ 'services/delta-service/**' ]
+            epsilon-service: [ 'services/epsilon-service/**' ]
+      - name: Build matrix from changed services
+        id: set-matrix
+        env:
+          CHANGES: ${{ steps.filter.outputs.changes }}
+          SERVICE_CONFIG: >-
+            [
+              { "service-name": "alpha-service",   "is_java": true,  "token_as_build_arg": true  },
+              { "service-name": "beta-service",    "is_java": true,  "token_as_build_arg": true  },
+              { "service-name": "gamma-service",   "is_java": false, "token_as_build_arg": true  },
+              { "service-name": "delta-service",   "is_java": false, "token_as_build_arg": false },
+              { "service-name": "epsilon-service", "is_java": false, "token_as_build_arg": false }
+            ]
+        run: |
+          # For workflow_dispatch with a selected service, use that directly
+          if [ -n "${{ inputs.service_to_run }}" ]; then
+            CHANGES='["${{ inputs.service_to_run }}"]'
+          fi
+
+          MATRIX=$(jq -nc \
+            --argjson changes "$CHANGES" \
+            --argjson config "$SERVICE_CONFIG" \
+            '{ "include": [ $config[] | select(."service-name" as $s | $changes | index($s)) |
+              . + { "dockerfile-path": ("services/" + ."service-name"), "container-registry-prefix": "example-app" }
+            ]}')
+
+          UNCHANGED=$(jq -nc \
+            --argjson changes "$CHANGES" \
+            --argjson config "$SERVICE_CONFIG" \
+            '[ $config[]."service-name" | select(. as $s | ($changes | index($s)) | not) ]')
+
+          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+          echo "unchanged=$UNCHANGED" >> "$GITHUB_OUTPUT"
+          echo "has_changes=$(echo "$MATRIX" | jq '.include | length > 0')" >> "$GITHUB_OUTPUT"
+
+  build-push:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.has_changes == 'true'
+    permissions:
+      contents: read
+      id-token: write
+      packages: read
+    strategy:
+      fail-fast: false  # This is needed to avoid having to rebuild everything if one service in the matrix fails in this step.
+      matrix: ${{ fromJson(needs.detect-changes.outputs.matrix) }}
+    uses: example-org/example-workflows/.github/workflows/build-push.yml@main
+    secrets: inherit
+    with:
+      dockerfile-path: ${{ matrix.dockerfile-path }}
+      service-name: ${{ matrix.service-name }}
+      container-registry-prefix: ${{ matrix.container-registry-prefix }}
+      is_java: ${{ matrix.is_java }}
+      token_as_build_arg: ${{ matrix.token_as_build_arg }}
+      tags: ${{ github.sha }}
+
+  retag-unchanged:
+    runs-on: ubuntu-latest
+    needs: [detect-changes, build-push]
+    if: ${{ !cancelled() && needs.detect-changes.result == 'success' }}
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      IMAGE_PREFIX: ${{ vars.CONTAINER_REGISTRY }}/example-org/example-app-
+      FALLBACK_TAG: latest
+      CRANE_VERSION: v0.22.1
+    steps:
+      - name: login to azure with federated credentials
+        uses: azure/login@v3
+        with:
+          client-id: ${{ vars.REGISTRY_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          allow-no-subscriptions: true
+      - name: get registry access token
+        id: registry-token
+        run: |
+          REGISTRY_TOKEN=$(az acr login --name ${{ vars.CONTAINER_REGISTRY }} --expose-token --output tsv --query accessToken)
+          echo "::add-mask::$REGISTRY_TOKEN"
+          echo "token=$REGISTRY_TOKEN" >> "$GITHUB_OUTPUT"
+      - name: login to container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ vars.CONTAINER_REGISTRY }}
+          username: 00000000-0000-0000-0000-000000000000
+          password: ${{ steps.registry-token.outputs.token }}
+      - name: setup go
+        uses: actions/setup-go@v7
+        with:
+          go-version: '1.27.1'
+      - name: install crane
+        run: go install github.com/google/go-containerregistry/cmd/crane@latest
+
+      - name: point sha tag at existing manifests
+        env:
+          UNCHANGED: ${{ needs.detect-changes.outputs.unchanged }}
+          SHA: ${{ github.sha }}
+          PREV_SHA: ${{ github.event.before }} # used to determine if a service has previously been built
+        run: |
+          set -euo pipefail
+          for SERVICE in $(echo "$UNCHANGED" | jq -r '.[]'); do
+            REPO="${IMAGE_PREFIX}${SERVICE}"
+            SRC=""
+            if [ -n "${PREV_SHA:-}" ] \
+              && [ "$PREV_SHA" != "0000000000000000000000000000000000000000" ] \
+              && crane manifest "${REPO}:${PREV_SHA}" > /dev/null 2>&1; then
+              SRC="$PREV_SHA"
+            elif crane manifest "${REPO}:${FALLBACK_TAG}" > /dev/null 2>&1; then
+              SRC="$FALLBACK_TAG"
+            fi
+
+            if [ -z "$SRC" ]; then
+              echo "::warning::no source image found for ${REPO}, skipping"
+              continue
+            fi
+
+            echo "retagging ${REPO}:${SRC} -> ${REPO}:${SHA}"
+            crane tag "${REPO}:${SRC}" "$SHA"
+          done

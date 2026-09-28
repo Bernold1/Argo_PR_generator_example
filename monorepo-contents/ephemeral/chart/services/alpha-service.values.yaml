@@ -1,0 +1,58 @@
+serviceName: "svc-alpha"
+replicaCount: 1
+pullRequestId: NaN
+image:
+  repository: registry.example.com/example-org/example-app-alpha-service
+  pullPolicy: Always
+
+serviceAccountName: "example-workload-identity-alpha"
+port: 8080
+apiBasePath: "/api/v1/alpha"
+platformSecretsRequired: true
+initContainers:
+  - name: wait-for-postgres
+    image: registry.example.com/public-cache/postgres:18
+    command: ["sh", "-c", "until pg_isready -h postgres-service -p 5432; do echo waiting for postgres-service; sleep 2; done"]
+
+configMap:
+  enabled: true
+  data:
+    - key: SPRING_PROFILES_ACTIVE
+      value: "ephemeral"
+    - key: POSTGRES_IP_ADDRESS
+      value: "postgres-service"
+    - key: POSTGRES_USERNAME
+      value: "svc-alpha"
+    - key: POSTGRES_DATABASE
+      value: "svc-alpha"
+    - key: EXTERNAL_BETA_BASE_URL
+      value: "http://svc-beta:8080/"
+
+service:
+  ports:
+    - port: 8080
+      name: http
+      protocol: TCP
+
+httpRoute:
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /api/v1/alpha
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+readinessProbe:
+  httpGet:
+    path: /api/v1/alpha/health
+    port: 8080
+
+seeding:
+  enabled: true

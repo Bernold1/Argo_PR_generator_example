@@ -1,0 +1,45 @@
+{{- $app := .Values }}
+{{- if and (not $app.isPostgres) $app.seeding $app.seeding.enabled $app.hasElasticSearch }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $app.serviceName }}-reindex
+  namespace: {{ .Release.Namespace | quote }}
+  labels:
+    app: {{ $app.serviceName }}-reindex
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+    # Runs after the seed Job (weight 1) so there is data to index.
+    argocd.argoproj.io/hook-weight: "2"
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        app: {{ $app.serviceName }}-reindex
+    spec:
+      restartPolicy: OnFailure
+      initContainers:
+        - name: wait-for-service
+          image: registry.example.com/public-cache/curl:8.22.0
+          command:
+            - sh
+            - -c
+            - |
+              until curl -sf -o /dev/null "http://{{ $app.serviceName }}-processor.{{ .Release.Namespace }}:{{ $app.port }}{{ $app.apiBasePath }}/health"; do
+                echo "Waiting for {{ $app.serviceName }}-processor..."
+                sleep 2
+              done
+      containers:
+        - name: reindex
+          image: registry.example.com/public-cache/curl:8.22.0
+          command:
+            - sh
+            - -c
+            - |
+              echo "Triggering reindex for {{ $app.serviceName }}..."
+              curl -sf -X POST "http://{{ $app.serviceName }}-processor.{{ .Release.Namespace }}:{{ $app.port }}{{ $app.apiBasePath }}/reindex"
+              echo "Done."
+{{- end }}

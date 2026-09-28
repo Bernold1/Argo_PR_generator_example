@@ -1,0 +1,158 @@
+{{- /*
+
+*/ -}}
+{{- range $groupIndex, $group := .Values.ephemeralGroups }}
+{{- $groupName := $group.name | default "group" }}
+{{- $repoURL := required (printf "ephemeralGroups[%s].repoURL is required" $groupName) $group.repoURL }}
+{{- $scmOwner := $group.owner }}
+{{- $scmRepo := $group.repo }}
+{{- $parts := regexSplit "/" $repoURL -1 }}
+{{- if not $scmOwner }}
+  {{- if ge (len $parts) 5 }}
+    {{- $scmOwner = index $parts 3 }}
+  {{- end }}
+{{- end }}
+{{- if not $scmRepo }}
+  {{- if ge (len $parts) 5 }}
+    {{- $scmRepo = index $parts 4 | trimSuffix ".git" }}
+  {{- end }}
+{{- end }}
+---
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: {{ $.Release.Name }}-{{ $.Values.environment }}-{{ $groupName }}-ephemeral-group
+  namespace: {{ $.Values.argocd.namespace }}
+  labels:
+    {{- include "ephemeral-group-example.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: gitops-ephemeral-group
+    app.kubernetes.io/ephemeral-source: {{ $groupName }}
+spec:
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+  generators:
+    - pullRequest:
+        github:
+          owner: {{ required (printf "ephemeralGroups[%s].owner could not be determined from repoURL" $groupName) $scmOwner }}
+          repo: {{ required (printf "ephemeralGroups[%s].repo could not be determined from repoURL" $groupName) $scmRepo }}
+          appSecretName: {{ $.Values.argocd.githubAppSecretName }}
+          {{- with $group.labels }}
+          labels:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+        requeueAfterSeconds: {{ $group.requeueAfterSeconds | default 300 }}
+        {{- with $group.filters }}
+        filters:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+  template:
+    metadata:
+      name: '{{ $.Release.Name }}-pr{{ `{{ .number }}` }}-example'
+      labels:
+        app.kubernetes.io/managed-by: applicationset-controller
+        app.kubernetes.io/part-of: {{ $.Release.Name }}
+        example.io/ephemeral: "true"
+        example.io/ephemeral-source: {{ $groupName }}
+        example.io/pr-number: '{{ `{{ .number }}` }}'
+    spec:
+      project: {{ $.Values.argocd.project }}
+      source:
+        repoURL: {{ $.Values.chart.repoURL }}
+        chart: {{ $.Values.chart.name }}
+        targetRevision: "{{ $.Chart.Version }}"
+        helm:
+          releaseName: {{ $.Release.Name }}-pr{{ `{{ .number }}` }}
+          valuesObject:
+            {{- /* Start from this release's values, dropping what must not be inherited. */ -}}
+            {{- $baseValues := omit $.Values "ephemeralGroups" | deepCopy }}
+            {{- $_ := set $baseValues "environment" "ephemeral" }}
+            {{- $_ := set $baseValues "pullRequestId" `{{ .number }}` }}
+            {{- /* Build the applications list from the group config. */ -}}
+            {{- $sharedPath := $group.path | default "" }}
+            {{- $sharedTargetRevision := $group.targetRevision | default `{{ .head_sha }}` }}
+            {{- $sharedHelm := $group.helm | default dict }}
+            {{- $newApplications := list }}
+            {{- range $groupApp := $group.applications }}
+              {{- $appEntry := dict "name" $groupApp.name }}
+              {{- $_ := set $appEntry "repositoryURL" ($groupApp.repositoryURL | default $group.repoURL) }}
+              {{- $appPath := $groupApp.path | default $sharedPath }}
+              {{- if $appPath }}
+                {{- $_ := set $appEntry "path" $appPath }}
+              {{- end }}
+              {{- $_ := set $appEntry "targetRevision" ($groupApp.targetRevision | default $sharedTargetRevision) }}
+              {{- /* Merge the group-level helm block with per-app overrides. */ -}}
+              {{- $mergedHelm := dict }}
+              {{- if $sharedHelm }}
+                {{- $mergedHelm = $sharedHelm | deepCopy }}
+              {{- end }}
+              {{- if $groupApp.helm }}
+                {{- /* Array fields are concatenated, not replaced. */ -}}
+                {{- range $arrayKey := list "valueFiles" "parameters" "fileParameters" }}
+                  {{- $appArray := index $groupApp.helm $arrayKey }}
+                  {{- if $appArray }}
+                    {{- $sharedArray := index $mergedHelm $arrayKey }}
+                    {{- if $sharedArray }}
+                      {{- $_ := set $mergedHelm $arrayKey (concat $sharedArray $appArray) }}
+                    {{- else }}
+                      {{- $_ := set $mergedHelm $arrayKey $appArray }}
+                    {{- end }}
+                  {{- end }}
+                {{- end }}
+                {{- /* Everything else is a plain override. */ -}}
+                {{- range $k, $v := omit $groupApp.helm "valueFiles" "parameters" "fileParameters" }}
+                  {{- $_ := set $mergedHelm $k $v }}
+                {{- end }}
+              {{- end }}
+              {{- if $mergedHelm }}
+                {{- $_ := set $appEntry "helm" $mergedHelm }}
+              {{- end }}
+              {{- $newApplications = append $newApplications $appEntry }}
+            {{- end }}
+            {{- $_ := set $baseValues "applications" $newApplications }}
+            {{- /* Give every ingress host a PR-specific prefix so previews don't collide. */ -}}
+            {{- if $baseValues.network }}
+              {{- if $baseValues.network.ingress }}
+                {{- $newIngress := list }}
+                {{- range $ing := $baseValues.network.ingress }}
+                  {{- $modifiedIng := $ing | deepCopy }}
+                  {{- if $modifiedIng.host }}
+                    {{- $_ := set $modifiedIng "host" (printf "{{ .number }}.%s" $modifiedIng.host) }}
+                  {{- end }}
+                  {{- $newIngress = append $newIngress $modifiedIng }}
+                {{- end }}
+                {{- $_ := set $baseValues.network "ingress" $newIngress }}
+              {{- end }}
+            {{- end }}
+            {{- with $group.valuesOverride }}
+              {{- $baseValues = mergeOverwrite $baseValues . }}
+            {{- end }}
+            {{- toYaml $baseValues | nindent 12 }}
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: '{{ $.Release.Name }}-pr{{ `{{ .number }}` }}-ephemeral'
+      syncPolicy:
+        automated:
+          {{- if and $group.syncPolicy (hasKey $group.syncPolicy "automated") }}
+          {{- toYaml $group.syncPolicy.automated | nindent 10 }}
+          {{- else }}
+          prune: true
+          selfHeal: true
+          {{- end }}
+        syncOptions:
+          - CreateNamespace=true
+          {{- if and $group.syncPolicy (hasKey $group.syncPolicy "syncOptions") }}
+          {{- toYaml $group.syncPolicy.syncOptions | nindent 10 }}
+          {{- end }}
+        {{- if and $group.syncPolicy (hasKey $group.syncPolicy "retry") }}
+        retry:
+          {{- toYaml $group.syncPolicy.retry | nindent 10 }}
+        {{- end }}
+      {{- with $group.ignoreDifferences }}
+      ignoreDifferences:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $group.info }}
+      info:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

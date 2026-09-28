@@ -1,0 +1,102 @@
+serviceName: "svc-beta"
+replicaCount: 1
+processorReplicaCount: 1
+pullRequestId: NaN
+
+hasProcessor: true
+hasElasticSearch: true
+isDomain: true
+
+image:
+  repository: registry.example.com/example-org/example-app-beta-service
+  pullPolicy: Always
+
+serviceAccountName: "example-workload-identity-beta"
+port: 8080
+apiBasePath: "/api/v1/beta"
+
+initContainers:
+  - name: wait-for-postgres
+    image: registry.example.com/public-cache/postgres:18
+    command: ["sh", "-c", "until pg_isready -h postgres-service -p 5432; do echo waiting for postgres-service; sleep 2; done"]
+
+configMap:
+  enabled: true
+  data:
+    - key: SPRING_PROFILES_ACTIVE
+      value: "ephemeral"
+    - key: POSTGRES_IP_ADDRESS
+      value: "postgres-service"
+    - key: POSTGRES_USERNAME
+      value: "svc-beta"
+    - key: POSTGRES_DATABASE
+      value: "svc-beta"
+    - key: KAFKA_BROKER_IP
+      value: "kafka.example.com:9092"
+    - key: ELASTIC_ENDPOINT
+      value: "https://elasticsearch.example.com:443"
+    - key: ELASTIC_INDEX_NAME
+      value: "beta"
+
+processorConfigMap:
+  data:
+    - key: SPRING_PROFILES_ACTIVE
+      value: "ephemeral,processor"
+    - key: KAFKA_BROKER_IP
+      value: "kafka.example.com:9092"
+    - key: CONSUMER_COMMAND_TOPIC
+      value: "example.beta-commands"
+    - key: PRODUCER_EVENT_TOPIC
+      value: "example.beta-events"
+    - key: CONSUMER_GROUP
+      value: "svc-beta-processor"
+    - key: POSTGRES_IP_ADDRESS
+      value: "postgres-service"
+    - key: POSTGRES_USERNAME
+      value: "svc-beta"
+    - key: POSTGRES_DATABASE
+      value: "svc-beta"
+
+service:
+  ports:
+    - port: 8080
+      name: http
+      protocol: TCP
+
+httpRoute:
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /api/v1/beta
+
+# Second route exposing the processor under a different prefix, rewritten back
+# to the processor's own API path.
+processorHttpRoute:
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /beta-processor
+      filters:
+        - type: URLRewrite
+          urlRewrite:
+            path:
+              type: ReplacePrefixMatch
+              replacePrefixMatch: /api/v1/beta
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 512Mi
+  limits:
+    cpu: 500m
+    memory: 1Gi
+
+readinessProbe:
+  httpGet:
+    path: /api/v1/beta/health
+    port: 8080
+
+seeding:
+  enabled: true

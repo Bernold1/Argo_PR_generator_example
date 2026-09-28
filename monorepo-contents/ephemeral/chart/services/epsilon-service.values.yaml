@@ -1,0 +1,54 @@
+serviceName: "svc-epsilon"
+replicaCount: 1
+pullRequestId: NaN
+isDomain: true
+image:
+  repository: registry.example.com/example-org/example-app-epsilon-service
+  pullPolicy: Always
+serviceAccountName: "example-workload-identity-epsilon"
+port: 8080
+httpRoute: false
+initContainers:
+  - name: wait-for-postgres
+    image: registry.example.com/public-cache/postgres:18
+    command:
+      [
+        "sh",
+        "-c",
+        "until pg_isready -h postgres-service -p 5432; do echo waiting for postgres-service; sleep 2; done",
+      ]
+configMap:
+  enabled: true
+  data:
+    - key: KAFKA_BROKER_IP
+      value: "kafka.example.com:9092"
+    - key: CONSUMER_COMMAND_TOPIC
+      value: "example.epsilon-commands"
+    - key: CONSUMER_COMMAND_GROUP
+      value: "svc-epsilon"
+    - key: POSTGRES_IP_ADDRESS
+      value: "postgres-service"
+    - key: POSTGRES_USERNAME
+      value: "svc-epsilon"
+    - key: POSTGRES_DATABASE
+      value: "svc-epsilon"
+secrets:
+  - envName: KAFKA_API_SECRET
+    secretName: kafka-credentials
+    secretKey: api-secret
+service:
+  ports:
+    - port: 8080
+      name: http
+      protocol: TCP
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: 300m
+    memory: 512Mi
+readinessProbe:
+  httpGet:
+    path: /health
+    port: 8080

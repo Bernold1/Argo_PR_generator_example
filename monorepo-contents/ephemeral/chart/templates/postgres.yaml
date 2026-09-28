@@ -1,0 +1,169 @@
+{{- $app := .Values }}
+{{- if $app.isPostgres }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $app.serviceName }}-headless
+  namespace: {{ .Release.Namespace | quote }}
+  labels:
+    app: {{ $app.serviceName }}
+spec:
+  clusterIP: None
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432
+  selector:
+    app: {{ $app.serviceName }}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $app.serviceName }}
+  namespace: {{ .Release.Namespace | quote }}
+  labels:
+    app: {{ $app.serviceName }}
+spec:
+  serviceName: {{ $app.serviceName }}-headless
+  replicas: 1
+  selector:
+    matchLabels:
+      app: {{ $app.serviceName }}
+  volumeClaimTemplates:
+    - apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata:
+        name: postgresdb
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: {{ $app.postgres.storage }}
+        {{- with $app.postgres.storageClassName }}
+        storageClassName: {{ . }}
+        {{- end }}
+  template:
+    metadata:
+      labels:
+        app: {{ $app.serviceName }}
+    spec:
+      securityContext:
+        fsGroup: 999 # ensures postgres can write to the PVC
+      containers:
+        - name: {{ $app.serviceName }}
+          image: "{{ $app.image.repository }}:{{ $app.image.staticTag | default $app.image.tag }}"
+          imagePullPolicy: {{ $app.image.pullPolicy }}
+          args: ["-N", "500"]
+          env:
+            - name: POSTGRES_USER
+              value: {{ $app.postgres.user | quote }}
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: POSTGRES_PASSWORD
+          ports:
+            - containerPort: 5432
+          # The container reports "Running" during initdb's internal restart
+          # cycle, so probes - not pod phase - are the real readiness signal
+          # that dependent services wait on.
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", {{ $app.postgres.user | quote }}]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", {{ $app.postgres.user | quote }}]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+          {{- with $app.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: postgresdb
+              mountPath: /var/lib/postgresql
+            - name: postgres-initdb
+              mountPath: /docker-entrypoint-initdb.d
+      volumes:
+        - name: postgres-initdb
+          configMap:
+            name: {{ $app.serviceName }}-initdb-config
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $app.serviceName }}-initdb-config
+  namespace: {{ .Release.Namespace | quote }}
+data:
+  # NOTE: scripts in /docker-entrypoint-initdb.d only run against an EMPTY data
+  # directory. Changing this requires recreating the StatefulSet and its PVC.
+  init.sh: |
+    #!/bin/bash
+    set -e
+
+    # Create one LOGIN role per database.
+    {{- range $app.postgres.databases }}
+    {{- $user := .user | default .name }}
+    psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" -c "CREATE ROLE \"{{ $user }}\" WITH LOGIN PASSWORD '$POSTGRES_PASSWORD';"
+    {{- end }}
+
+    # Create the databases.
+    {{- range $app.postgres.databases }}
+    {{- $user := .user | default .name }}
+    psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" -c "CREATE DATABASE \"{{ .name }}\" OWNER \"{{ $user }}\";"
+    {{- end }}
+
+    # Grant schema privileges.
+    {{- range $app.postgres.databases }}
+    {{- $user := .user | default .name }}
+    psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "{{ .name }}" -c "GRANT ALL ON SCHEMA public TO \"{{ $user }}\";"
+    {{- end }}
+
+    # Extensions - uuid-ossp everywhere, plus any per-database extras.
+    {{- range $app.postgres.databases }}
+    {{- $dbName := .name }}
+    psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "{{ $dbName }}" -c "CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\";"
+    {{- range .extensions }}
+    psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "{{ $dbName }}" -c "CREATE EXTENSION IF NOT EXISTS \"{{ . }}\";"
+    {{- end }}
+    {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $app.serviceName }}
+  namespace: {{ .Release.Namespace | quote }}
+  labels:
+    app: {{ $app.serviceName }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432
+  selector:
+    app: {{ $app.serviceName }}
+---
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: postgres-secret
+  namespace: {{ .Release.Namespace | quote }}
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    kind: SecretStore
+    name: example-secret-store
+  target:
+    name: postgres-secret
+    creationPolicy: Owner
+  data:
+    - secretKey: POSTGRES_PASSWORD
+      remoteRef:
+        key: ephemeral-postgres-password
+{{- end }}

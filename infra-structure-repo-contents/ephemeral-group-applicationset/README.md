@@ -1,0 +1,3 @@
+# Ephemeral environment ApplicationSet (example)
+
+The application set referencing the same chart is only an example, we reuse the same chart to deploy all of our infrastructure dependencies again, imagine gateways, certs, azure resources, monitoring, workfload identities and similar...

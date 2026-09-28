@@ -1,0 +1,19 @@
+{{- $app := .Values }}
+{{- if and $app.configMap $app.configMap.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $app.serviceName }}-configmap
+  namespace: {{ .Release.Namespace | quote }}
+data:
+  {{- if $app.isFrontend }}
+  APP_BASE_URL: {{ printf "https://%v.dev.example.com" $app.pullRequestId | squote }}
+  {{- end }}
+  {{- range $entry := $app.configMap.data }}
+  {{- if and (eq $entry.key "CONSUMER_COMMAND_GROUP") $app.isDomain }}
+  {{ $entry.key }}: {{ printf "%s-%s" $entry.value $.Release.Namespace | squote }}
+  {{- else }}
+  {{ $entry.key }}: {{ $entry.value | squote }}
+  {{- end }}
+  {{- end }}
+{{- end }}

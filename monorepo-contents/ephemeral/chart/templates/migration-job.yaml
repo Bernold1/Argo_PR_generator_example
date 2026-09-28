@@ -1,0 +1,53 @@
+{{- $app := .Values }}
+{{- if and (not $app.isPostgres) $app.migration $app.migration.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $app.serviceName }}-migrate
+  namespace: {{ .Release.Namespace | quote }}
+  labels:
+    app: {{ $app.serviceName }}-migrate
+  annotations:
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+    argocd.argoproj.io/hook-weight: "1"
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        app: {{ $app.serviceName }}-migrate
+    spec:
+      restartPolicy: OnFailure
+      initContainers:
+        - name: wait-for-postgres
+          image: registry.example.com/public-cache/postgres:18
+          command:
+            - sh
+            - -c
+            - |
+              until pg_isready -h postgres-service -p 5432; do
+                echo "Waiting for postgres..."
+                sleep 2
+              done
+      containers:
+        - name: migrate
+          image: "{{ $app.image.repository }}:{{ $app.image.tag }}"
+          imagePullPolicy: {{ $app.image.pullPolicy }}
+          env:
+            - name: DB_USER
+              value: {{ $app.migration.dbUser | default $app.serviceName | quote }}
+            - name: DB_NAME
+              value: {{ $app.migration.dbName | default $app.serviceName | quote }}
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: POSTGRES_PASSWORD
+          command:
+            - ./migrate
+          args:
+            - --connection
+            - "Host=postgres-service;Port=5432;Database=$(DB_NAME);Username=$(DB_USER);Password=$(DB_PASSWORD)"
+{{- end }}

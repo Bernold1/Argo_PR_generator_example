@@ -1,0 +1,8 @@
+apiVersion: v2
+name: ephemeral-group-example
+description: |
+  Minimal, vendor-neutral example of an Argo CD ApplicationSet that creates a
+  complete ephemeral (preview) environment per GitHub pull request.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

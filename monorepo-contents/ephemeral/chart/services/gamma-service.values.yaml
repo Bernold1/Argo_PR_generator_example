@@ -1,0 +1,66 @@
+serviceName: "svc-gamma"
+replicaCount: 1
+pullRequestId: NaN
+image:
+  repository: registry.example.com/example-org/example-app-gamma-service
+  pullPolicy: Always
+serviceAccountName: "example-workload-identity-gamma"
+port: 8080
+apiBasePath: "/api/v1/gamma"
+initContainers:
+  - name: wait-for-postgres
+    image: registry.example.com/public-cache/postgres:18
+    command:
+      [
+        "sh",
+        "-c",
+        "until pg_isready -h postgres-service -p 5432; do echo waiting for postgres-service; sleep 2; done",
+      ]
+configMap:
+  enabled: true
+  data:
+    - key: Persistence__PostgreSqlUrl
+      value: "postgres-service"
+    - key: Persistence__Port
+      value: "5432"
+    - key: Persistence__UserName
+      value: "svc-gamma"
+    - key: Persistence__Database
+      value: "svc-gamma"
+    - key: ServiceName
+      value: "svc-gamma"
+    - key: EnableOpenApi
+      value: "true"
+    - key: ExternalServices__Alpha__BaseUrl
+      value: "http://svc-alpha:8080/"
+    - key: Oidc__Authority
+      value: "https://login.example.com/00000000-0000-0000-0000-000000000000"
+service:
+  ports:
+    - port: 8080
+      name: http
+      protocol: TCP
+
+httpRoute:
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /api/v1/gamma
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: 500m
+    memory: 1Gi
+readinessProbe:
+  httpGet:
+    path: /health
+    port: 8080
+migration:
+  enabled: true
+  dbUser: "svc-gamma"
+  dbName: "svc-gamma"
+seeding:
+  enabled: true

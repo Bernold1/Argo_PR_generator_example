@@ -1,0 +1,165 @@
+# Default values for the ephemeral chart.
+# Every service in services/*.values.yaml overrides the subset it cares about.
+
+# Logical name of the workload. Used for the Deployment/Service/ConfigMap names
+# and as the in-cluster DNS name other services talk to.
+serviceName: "svc-example"
+
+# Identifier of the pull request this environment belongs to. Injected by the
+# GitOps controller; used to build the public hostname.
+pullRequestId: 0
+
+# ---------------------------------------------------------------------------
+# Feature flags - each one switches a template on or off.
+# ---------------------------------------------------------------------------
+
+# Render templates/postgres.yaml instead of the generic workload templates.
+# Only ever true in services/postgres.values.yaml.
+isPostgres: false
+
+# Render an extra "<serviceName>-processor" Deployment + Service. Used by
+# services that run a Kafka consumer alongside their HTTP API.
+hasProcessor: false
+
+# Appends the namespace to any CONSUMER_*_GROUP config key so parallel
+# ephemeral environments do not share a Kafka consumer group.
+isDomain: false
+
+# Injects APP_BASE_URL (the environment's public URL) into the container.
+isFrontend: false
+
+# Injects ELASTIC_ALIAS_SUFFIX and enables the post-deploy reindex Job.
+hasElasticSearch: false
+
+replicaCount: 1
+# Replica count for the "-processor" Deployment, when hasProcessor is true.
+processorReplicaCount: 1
+
+image:
+  repository: registry.example.com/example-org/example-app-example-service
+  pullPolicy: IfNotPresent
+  # Dynamic, per-pull-request tag. Injected by the GitOps controller with
+  # `--set image.tag=<commit sha>`, which overrides every values file.
+  tag: ""
+  # Opt-out pin. When set it WINS over image.tag, so a service can stay on a
+  # fixed image (e.g. an off-the-shelf container) even though the controller
+  # injects a tag for everything.
+  staticTag: ""
+
+# Workload identity / IRSA style identity the pod runs as.
+serviceAccountName: "example-workload-identity"
+
+podAnnotations: {}
+podLabels: {}
+
+# Container port the application listens on.
+port: 8080
+
+# Base path the application serves its API under. Used by the reindex Job.
+apiBasePath: ""
+
+# Rendered into a ConfigMap AND mounted key-by-key as env vars on the container.
+configMap:
+  enabled: true
+  data:
+    - key: EXAMPLE_KEY_ONE
+      value: "value one"
+    - key: EXAMPLE_KEY_TWO
+      value: "value two"
+
+# Same shape as configMap, but for the "-processor" Deployment. When omitted,
+# the processor reuses the main ConfigMap.
+processorConfigMap: {}
+
+# Env vars sourced from pre-existing Kubernetes Secrets.
+# - envName: EXAMPLE_TOKEN
+#   secretName: example-secret
+#   secretKey: token
+secrets: []
+
+service:
+  ports:
+    - port: 8080
+      name: http
+      protocol: TCP
+    - port: 9464
+      name: metrics
+
+# -- Expose the service through a gateway-api HTTPRoute.
+# Requires Gateway API CRDs and a controller in the cluster.
+# Set to `false` in a values file to render no route at all.
+httpRoute:
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /api/v1/example
+
+# Optional second HTTPRoute pointing at the "-processor" Service.
+# Same shape as httpRoute. Only rendered when hasProcessor is true.
+processorHttpRoute: {}
+
+# Gateways the routes attach to. Defaults to "<namespace>-gateway" in the
+# gateway controller's namespace when left empty.
+parentRefs: []
+# - name: example-gateway
+#   namespace: gateway-system
+
+# Hostnames the routes match. Defaults to "<pullRequestId>.dev.example.com".
+hostnames: []
+# - dev.example.com
+
+# Runs `./migrate` as a PreSync hook before the workload is rolled out.
+migration:
+  enabled: false
+  # Default to serviceName when unset.
+  dbUser: ""
+  dbName: ""
+
+# Applies seeds/<serviceName>.sql as a PostSync hook. Silently skipped when no
+# matching seed file exists.
+seeding:
+  enabled: false
+  dbUser: ""
+  dbName: ""
+
+# Creates the shared platform ExternalSecrets (OIDC client id/secret).
+# Enable in exactly one service so they are created once per environment.
+platformSecretsRequired: false
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+
+readinessProbe:
+  httpGet:
+    path: /health
+    port: 8080
+
+# NOTE: there is no HPA template in this chart yet - this block is reserved.
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 80
+
+volumes: []
+  # - name: example-volume
+  #   secret:
+  #     secretName: example-secret
+
+volumeMounts: []
+  # - name: example-volume
+  #   mountPath: /etc/example
+  #   readOnly: true
+
+# Pass-through init containers, e.g. for blocking on a dependency being ready.
+initContainers: []
+  # - name: wait-for-postgres
+  #   image: postgres:18
+  #   command: ["sh", "-c", "until pg_isready -h postgres-service -p 5432; do sleep 2; done"]
+
+nodeSelector: {}
+affinity: {}
+tolerations: []

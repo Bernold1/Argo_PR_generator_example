@@ -1,0 +1,109 @@
+{{- $app := .Values }}
+{{- if $app.hasProcessor }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $app.serviceName }}-processor
+  namespace: {{ .Release.Namespace | quote }}
+  labels:
+    app: {{ $app.serviceName }}
+spec:
+  {{- if not $app.autoscaling.enabled }}
+  replicas: {{ ternary $app.processorReplicaCount 1 (hasKey $app "processorReplicaCount") }}
+  {{- end }}
+  selector:
+    matchLabels:
+      app: {{ $app.serviceName }}-processor
+  template:
+    metadata:
+      annotations:
+        configmap.reloader.stakater.com/reload: {{ $app.serviceName }}-processor-configmap
+        sidecar.opentelemetry.io/inject: "true"
+      labels:
+        app: {{ $app.serviceName }}-processor
+    spec:
+      automountServiceAccountToken: true
+      serviceAccountName: {{ $app.serviceAccountName }}
+      {{- with $app.initContainers }}
+      initContainers:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: {{ $app.serviceName }}-processor
+        {{- if $app.image.staticTag }}
+          image: "{{ $app.image.repository }}:{{ $app.image.staticTag }}"
+        {{- else }}
+          image: "{{ $app.image.repository }}:{{ $app.image.tag }}"
+        {{- end }}
+          imagePullPolicy: {{ $app.image.pullPolicy }}
+          ports:
+            - containerPort: {{ $app.port }}
+          {{- with $app.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with $app.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          env:
+          {{- if $app.processorConfigMap }}
+            {{- range $entry := $app.processorConfigMap.data }}
+            - name: {{ $entry.key }}
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ $app.serviceName }}-processor-configmap
+                  key: {{ $entry.key }}
+            {{- end }}
+          {{- else if and $app.configMap $app.configMap.enabled }}
+            {{- range $entry := $app.configMap.data }}
+            - name: {{ $entry.key }}
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ $app.serviceName }}-configmap
+                  key: {{ $entry.key }}
+            {{- end }}
+          {{- end }}
+          {{- if $app.hasElasticSearch }}
+            - name: ELASTIC_ALIAS_SUFFIX
+              value: {{ printf "-%s" .Release.Namespace | quote }}
+          {{- end }}
+            - name: OIDC_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: oidc-client-id
+                  key: oidc-client-id
+          {{- with $app.volumeMounts }}
+          volumeMounts:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      {{- with $app.volumes }}
+      volumes:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $app.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $app.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $app.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $app.serviceName }}-processor
+  namespace: {{ .Release.Namespace | quote }}
+spec:
+  {{- with $app.service.ports }}
+  ports:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  selector:
+    app: {{ $app.serviceName }}-processor
+{{- end }}

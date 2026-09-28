@@ -1,0 +1,26 @@
+serviceName: "postgres-service"
+isPostgres: true
+image:
+  repository: registry.example.com/public-cache/postgres
+  staticTag: "18"
+  pullPolicy: IfNotPresent
+postgres:
+  user: "postgresadmin"
+  storage: "5Gi"
+  storageClassName: ""
+  databases:
+    - name: svc-alpha
+    - name: svc-beta
+      extensions:
+        - pg_trgm
+    - name: svc-gamma
+    - name: svc-epsilon
+    - name: svc-shared
+      user: example-shared-reader
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: 500m
+    memory: 1Gi

@@ -1,0 +1,16 @@
+{{- $app := .Values }}
+{{- if $app.processorConfigMap }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $app.serviceName }}-processor-configmap
+  namespace: {{ .Release.Namespace | quote }}
+data:
+  {{- range $entry := $app.processorConfigMap.data }}
+  {{- if contains "GROUP" $entry.key }}
+  {{ $entry.key }}: {{ printf "%s-%s" $entry.value $.Release.Namespace | squote }}
+  {{- else }}
+  {{ $entry.key }}: {{ $entry.value | squote }}
+  {{- end }}
+  {{- end }}
+{{- end }}
